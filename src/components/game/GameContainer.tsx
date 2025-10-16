@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { generateTriviaQuestions } from '@/ai/flows/generate-trivia-questions';
 import { useToast } from '@/hooks/use-toast';
 import type { Player, TriviaQuestion, GameHistoryEntry } from '@/lib/types';
 import Leaderboard from './Leaderboard';
@@ -16,10 +15,29 @@ import { Badge } from '@/components/ui/badge';
 import { Loader2, CheckCircle, XCircle, Clock, ArrowRight } from 'lucide-react';
 import { db } from '@/lib/firebase';
 import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
-
+import { sample } from 'lodash';
+import { staticTriviaQuestions } from '@/lib/trivia-questions';
 
 const QUESTIONS_PER_GAME = 10;
 const TIME_PER_QUESTION = 30; // seconds
+
+function shuffle(array: any[]) {
+  let currentIndex = array.length,  randomIndex;
+
+  // While there remain elements to shuffle.
+  while (currentIndex > 0) {
+
+    // Pick a remaining element.
+    randomIndex = Math.floor(Math.random() * currentIndex);
+    currentIndex--;
+
+    // And swap it with the current element.
+    [array[currentIndex], array[randomIndex]] = [
+      array[randomIndex], array[currentIndex]];
+  }
+
+  return array;
+}
 
 export default function GameContainer() {
   const router = useRouter();
@@ -61,11 +79,11 @@ export default function GameContainer() {
       if (players.length > 0 && !gameId) {
         setGamePhase('loading');
         try {
-          const generatedQuestions = await generateTriviaQuestions({ numberOfQuestions: QUESTIONS_PER_GAME });
+          const selectedQuestions = shuffle([...staticTriviaQuestions]).slice(0, QUESTIONS_PER_GAME);
           
           const gameDocData = {
               players: players,
-              questions: generatedQuestions,
+              questions: selectedQuestions,
               history: [],
               status: 'in-progress' as const,
               createdAt: serverTimestamp(),
@@ -74,11 +92,11 @@ export default function GameContainer() {
           const gameRef = await addDoc(collection(db, "games"), gameDocData);
           
           setGameId(gameRef.id);
-          setQuestions(generatedQuestions);
+          setQuestions(selectedQuestions);
           setGamePhase('playing');
         } catch (error) {
           console.error(error);
-          toast({ title: 'AI Error', description: 'Failed to generate trivia questions. Please try again.', variant: 'destructive' });
+          toast({ title: 'Game Error', description: 'Failed to initialize the game. Please try again.', variant: 'destructive' });
           router.push('/');
         }
       }
@@ -177,7 +195,7 @@ export default function GameContainer() {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh]">
         <Loader2 className="h-16 w-16 animate-spin text-primary" />
-        <p className="mt-4 text-xl text-muted-foreground">Generating epic questions...</p>
+        <p className="mt-4 text-xl text-muted-foreground">Preparing the game...</p>
       </div>
     );
   }
