@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { Gem, Ghost, Cat, Dog, Bird, Bug, Fish, Croissant, Pizza, Rocket, Planet, Skull } from 'lucide-react';
+import { Gem, Ghost, Cat, Dog, Bird, Bug, Fish, Croissant, Pizza, Rocket, Plane, Skull } from 'lucide-react';
 
 export const AVATARS: Record<string, LucideIcon> = {
   gem: Gem,
@@ -12,7 +12,7 @@ export const AVATARS: Record<string, LucideIcon> = {
   croissant: Croissant,
   pizza: Pizza,
   rocket: Rocket,
-  planet: Planet,
+  plane: Plane,
   skull: Skull,
 };
 
