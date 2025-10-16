@@ -15,7 +15,6 @@ import { Badge } from '@/components/ui/badge';
 import { Loader2, CheckCircle, XCircle, Clock, ArrowRight } from 'lucide-react';
 import { db } from '@/lib/firebase';
 import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
-import { sample } from 'lodash';
 import { staticTriviaQuestions } from '@/lib/trivia-questions';
 
 const QUESTIONS_PER_GAME = 10;

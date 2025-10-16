@@ -1,99 +1,313 @@
-'use server';
+'use client';
 
-/**
- * @fileOverview This file defines a Genkit flow for generating difficult trivia questions.
- *
- * The flow takes the number of questions as input and returns an array of trivia questions.
- * - generateTriviaQuestions - A function that generates trivia questions.
- * - GenerateTriviaQuestionsInput - The input type for the generateTriviaQuestions function.
- * - GenerateTriviaQuestionsOutput - The return type for the generateTriviaQuestions function.
- */
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useToast } from '@/hooks/use-toast';
+import type { Player, TriviaQuestion, GameHistoryEntry } from '@/lib/types';
+import Leaderboard from './Leaderboard';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { Loader2, CheckCircle, XCircle, Clock, ArrowRight } from 'lucide-react';
+import { db } from '@/lib/firebase';
+import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
+import { staticTriviaQuestions } from '@/lib/trivia-questions';
 
-import {ai} from '@/ai/genkit';
-import {z} from 'genkit';
+const QUESTIONS_PER_GAME = 10;
+const TIME_PER_QUESTION = 30; // seconds
 
-const GenerateTriviaQuestionsInputSchema = z.object({
-  numberOfQuestions: z
-    .number()
-    .min(1)
-    .max(50)
-    .describe('The number of trivia questions to generate.'),
-});
-export type GenerateTriviaQuestionsInput = z.infer<
-  typeof GenerateTriviaQuestionsInputSchema
->;
+function shuffle(array: any[]) {
+  let currentIndex = array.length,  randomIndex;
 
-const TriviaQuestionSchema = z.object({
-  question: z.string().describe('The trivia question.'),
-  answer: z.string().describe('The correct answer to the question.'),
-  category: z.string().describe('The category of the trivia question.'),
-  difficulty: z
-    .enum(['easy', 'medium', 'hard'])
-    .describe('The difficulty level of the question.'),
-});
+  // While there remain elements to shuffle.
+  while (currentIndex > 0) {
 
-const GenerateTriviaQuestionsOutputSchema = z.array(TriviaQuestionSchema);
-export type GenerateTriviaQuestionsOutput = z.infer<
-  typeof GenerateTriviaQuestionsOutputSchema
->;
+    // Pick a remaining element.
+    randomIndex = Math.floor(Math.random() * currentIndex);
+    currentIndex--;
 
-export async function generateTriviaQuestions(
-  input: GenerateTriviaQuestionsInput
-): Promise<GenerateTriviaQuestionsOutput> {
-  return generateTriviaQuestionsFlow(input);
-}
-
-const generateTriviaQuestionsPrompt = ai.definePrompt({
-  name: 'generateTriviaQuestionsPrompt',
-  input: {schema: GenerateTriviaQuestionsInputSchema},
-  output: {schema: GenerateTriviaQuestionsOutputSchema},
-  prompt: `You are an expert trivia question generator. Your task is to generate {{numberOfQuestions}} difficult trivia questions on various topics.
-
-Each question should be unique, challenging, and engaging. Avoid generating questions that are too similar to each other.
-
-Each question should have a clear answer and belong to a specific category and have a difficulty level of hard.
-
-Ensure that the output is a valid JSON array of trivia questions.
-
-Here's the format for each question:
-{
-  "question": "The trivia question.",
-  "answer": "The correct answer to the question.",
-  "category": "The category of the trivia question.",
-  "difficulty": "hard"
-}
-
-Output:`,
-  config: {
-    safetySettings: [
-      {
-        category: 'HARM_CATEGORY_HATE_SPEECH',
-        threshold: 'BLOCK_ONLY_HIGH',
-      },
-      {
-        category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
-        threshold: 'BLOCK_NONE',
-      },
-      {
-        category: 'HARM_CATEGORY_HARASSMENT',
-        threshold: 'BLOCK_MEDIUM_AND_ABOVE',
-      },
-      {
-        category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
-        threshold: 'BLOCK_LOW_AND_ABOVE',
-      },
-    ],
-  },
-});
-
-const generateTriviaQuestionsFlow = ai.defineFlow(
-  {
-    name: 'generateTriviaQuestionsFlow',
-    inputSchema: GenerateTriviaQuestionsInputSchema,
-    outputSchema: GenerateTriviaQuestionsOutputSchema,
-  },
-  async input => {
-    const {output} = await generateTriviaQuestionsPrompt(input);
-    return output!;
+    // And swap it with the current element.
+    [array[currentIndex], array[randomIndex]] = [
+      array[randomIndex], array[currentIndex]];
   }
-);
+
+  return array;
+}
+
+export default function GameContainer() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { toast } = useToast();
+
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [questions, setQuestions] = useState<TriviaQuestion[]>([]);
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [gamePhase, setGamePhase] = useState<'loading' | 'playing' | 'reveal' | 'finished'>('loading');
+  
+  const [timer, setTimer] = useState(TIME_PER_QUESTION);
+  const [currentAnswers, setCurrentAnswers] = useState<Record<string, string>>({});
+
+  const [isAnswerModalOpen, setIsAnswerModalOpen] = useState(false);
+  const [activePlayer, setActivePlayer] = useState<Player | null>(null);
+  const [playerAnswer, setPlayerAnswer] = useState("");
+
+  const [gameHistory, setGameHistory] = useState<GameHistoryEntry[]>([]);
+  const [gameId, setGameId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const playersParam = searchParams.get('players');
+    if (playersParam) {
+      try {
+        const parsedPlayers: Player[] = JSON.parse(playersParam);
+        setPlayers(parsedPlayers);
+      } catch (e) {
+        toast({ title: 'Error', description: 'Failed to load players. Redirecting to lobby.', variant: 'destructive' });
+        router.push('/');
+      }
+    } else {
+      router.push('/');
+    }
+  }, [searchParams, router, toast]);
+
+  useEffect(() => {
+    async function initializeGame() {
+      if (players.length > 0 && !gameId) {
+        setGamePhase('loading');
+        try {
+          const selectedQuestions = shuffle([...staticTriviaQuestions]).slice(0, QUESTIONS_PER_GAME);
+          
+          const gameDocData = {
+              players: players,
+              questions: selectedQuestions,
+              history: [],
+              status: 'in-progress' as const,
+              createdAt: serverTimestamp(),
+          };
+
+          const gameRef = await addDoc(collection(db, "games"), gameDocData);
+          
+          setGameId(gameRef.id);
+          setQuestions(selectedQuestions);
+          setGamePhase('playing');
+        } catch (error) {
+          console.error(error);
+          toast({ title: 'Game Error', description: 'Failed to initialize the game. Please try again.', variant: 'destructive' });
+          router.push('/');
+        }
+      }
+    }
+    initializeGame();
+  }, [players, router, toast, gameId]);
+
+  useEffect(() => {
+    if (gamePhase !== 'playing') return;
+
+    if (timer > 0) {
+      const interval = setInterval(() => {
+        setTimer(t => t - 1);
+      }, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setGamePhase('reveal');
+    }
+  }, [timer, gamePhase]);
+
+  const currentQuestion = useMemo(() => questions[currentQuestionIndex], [questions, currentQuestionIndex]);
+
+  const handleOpenAnswerModal = (player: Player) => {
+    if (currentAnswers[player.id]) return; // Already answered
+    setActivePlayer(player);
+    setIsAnswerModalOpen(true);
+  };
+  
+  const handleSubmitAnswer = () => {
+    if (!activePlayer || !playerAnswer.trim()) return;
+    setCurrentAnswers(prev => ({...prev, [activePlayer.id]: playerAnswer.trim()}));
+    setIsAnswerModalOpen(false);
+    setPlayerAnswer("");
+    setActivePlayer(null);
+  };
+
+  const handleNextPhase = useCallback(async () => {
+    if (gamePhase === 'reveal') {
+      const correctAnswer = currentQuestion.answer;
+      
+      const newGameHistoryEntry: GameHistoryEntry = {
+        question: currentQuestion.question,
+        category: currentQuestion.category,
+        correctAnswer: correctAnswer,
+        players: players.map(p => ({
+          name: p.name,
+          answer: currentAnswers[p.id] || "No answer",
+          isCorrect: (currentAnswers[p.id] || "").toLowerCase() === correctAnswer.toLowerCase(),
+        }))
+      };
+      setGameHistory(prev => [...prev, newGameHistoryEntry]);
+
+      const updatedPlayers = players.map(player => {
+        if ((currentAnswers[player.id] || "").toLowerCase() === correctAnswer.toLowerCase()) {
+          return { ...player, score: player.score + 10 };
+        }
+        return player;
+      });
+      setPlayers(updatedPlayers);
+
+      if (currentQuestionIndex < questions.length - 1) {
+        setCurrentQuestionIndex(prev => prev + 1);
+        setCurrentAnswers({});
+        setTimer(TIME_PER_QUESTION);
+        setGamePhase('playing');
+      } else {
+        setGamePhase('finished');
+        const finalHistory = [...gameHistory, newGameHistoryEntry];
+        
+        if (gameId) {
+            try {
+                const gameRef = doc(db, "games", gameId);
+                await updateDoc(gameRef, {
+                    players: updatedPlayers,
+                    history: finalHistory,
+                    status: 'finished'
+                });
+                router.push(`/results/${gameId}`);
+            } catch (error) {
+                console.error("Failed to save game results:", error);
+                toast({ title: 'Error', description: 'Could not save game results. Please try again.', variant: 'destructive' });
+            }
+        } else {
+             toast({ title: 'Error', description: 'Game ID not found. Cannot save results.', variant: 'destructive' });
+             router.push('/');
+        }
+      }
+    }
+  }, [gamePhase, currentQuestion, players, currentAnswers, currentQuestionIndex, questions.length, router, gameHistory, gameId, toast]);
+
+  const unansweredPlayers = useMemo(() => {
+    return players.filter(p => !currentAnswers[p.id]);
+  }, [players, currentAnswers]);
+
+  if (gamePhase === 'loading' || !currentQuestion) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh]">
+        <Loader2 className="h-16 w-16 animate-spin text-primary" />
+        <p className="mt-4 text-xl text-muted-foreground">Preparing the game...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="container mx-auto p-4 lg:p-8">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="lg:col-span-2 order-2 lg:order-1">
+          <Card className="shadow-xl">
+            <CardHeader>
+              <div className="flex justify-between items-start">
+                  <div>
+                    <CardDescription>Question {currentQuestionIndex + 1} / {questions.length}</CardDescription>
+                    <CardTitle className="text-2xl lg:text-3xl font-bold mt-1">{currentQuestion.question}</CardTitle>
+                  </div>
+                  <Badge variant="secondary" className="whitespace-nowrap">{currentQuestion.category}</Badge>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {gamePhase === 'playing' && (
+                <div className="space-y-6">
+                  <div className="flex items-center gap-4">
+                    <Clock className="h-6 w-6 text-primary" />
+                    <Progress value={(timer / TIME_PER_QUESTION) * 100} className="h-4" />
+                    <span className="text-lg font-semibold tabular-nums">{timer}s</span>
+                  </div>
+                  
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Who will answer?</CardTitle>
+                      <CardDescription>Click your name to submit an answer.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {players.map(player => {
+                        const hasAnswered = !!currentAnswers[player.id];
+                        return (
+                          <Button 
+                            key={player.id} 
+                            variant={hasAnswered ? "secondary" : "outline"}
+                            onClick={() => handleOpenAnswerModal(player)}
+                            disabled={hasAnswered}
+                            className="justify-start gap-2"
+                          >
+                            {hasAnswered ? <CheckCircle className="h-4 w-4 text-green-500" /> : <div className="h-4 w-4" />}
+                            <span className="truncate">{player.name}</span>
+                          </Button>
+                        )
+                      })}
+                    </CardContent>
+                  </Card>
+                  {unansweredPlayers.length === 0 && (
+                     <Button onClick={() => setGamePhase('reveal')} className="w-full">
+                        Reveal Answer <ArrowRight className="ml-2 h-4 w-4" />
+                     </Button>
+                  )}
+                </div>
+              )}
+
+              {gamePhase === 'reveal' && (
+                <div className="space-y-4 animate-in fade-in-50">
+                   <Alert className="bg-green-500/10 border-green-500/50 text-green-700 dark:text-green-400">
+                    <AlertTitle className="font-bold">The correct answer is: {currentQuestion.answer}</AlertTitle>
+                  </Alert>
+
+                  <div className="space-y-2">
+                    {players.map(player => {
+                      const playerAnswer = currentAnswers[player.id] || "No answer";
+                      const isCorrect = playerAnswer.toLowerCase() === currentQuestion.answer.toLowerCase();
+                      return (
+                        <div key={player.id} className="flex items-center justify-between p-3 rounded-md bg-secondary">
+                          <p className="font-medium">{player.name}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-muted-foreground italic truncate max-w-[150px]">{playerAnswer}</p>
+                            {isCorrect ? <CheckCircle className="h-5 w-5 text-green-500" /> : <XCircle className="h-5 w-5 text-destructive" />}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  
+                  <Button onClick={handleNextPhase} className="w-full">
+                    {currentQuestionIndex < questions.length - 1 ? 'Next Question' : 'Finish Game'}
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+        
+        <div className="order-1 lg:order-2">
+          <Leaderboard players={players} />
+        </div>
+      </div>
+
+      <Dialog open={isAnswerModalOpen} onOpenChange={setIsAnswerModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>It's your turn, {activePlayer?.name}!</DialogTitle>
+            <DialogDescription>Enter your answer for the question below. No cheating!</DialogDescription>
+          </DialogHeader>
+          <p className="font-semibold italic text-muted-foreground">"{currentQuestion.question}"</p>
+          <Input 
+            placeholder="Type your answer here..."
+            value={playerAnswer}
+            onChange={(e) => setPlayerAnswer(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSubmitAnswer()}
+          />
+          <DialogFooter>
+            <Button onClick={handleSubmitAnswer} disabled={!playerAnswer.trim()}>Submit Answer</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
