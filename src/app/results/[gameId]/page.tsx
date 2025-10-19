@@ -1,7 +1,6 @@
+'use client';
 import { Suspense } from 'react';
-import { notFound } from 'next/navigation';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { notFound, useSearchParams } from 'next/navigation';
 import type { Game } from '@/lib/types';
 import ResultsDisplay from '@/components/game/ResultsDisplay';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -28,40 +27,45 @@ function ResultsLoadingSkeleton() {
   );
 }
 
-async function getGameData(gameId: string): Promise<Game | null> {
-    try {
-        const gameRef = doc(db, 'games', gameId);
-        const gameSnap = await getDoc(gameRef);
+function LocalResultsPage() {
+    const searchParams = useSearchParams();
+    const gameDataString = searchParams.get('game');
 
-        if (!gameSnap.exists()) {
-            return null;
+    let gameData: Game | null = null;
+
+    if (gameDataString) {
+        try {
+            gameData = JSON.parse(decodeURIComponent(gameDataString));
+        } catch (error) {
+            console.error("Failed to parse game data from URL", error);
         }
-        
-        const data = gameSnap.data();
-        
-        // Firestore Timestamps are not serializable for Next.js server->client prop passing.
-        const serializableData = JSON.parse(JSON.stringify(data));
-
-        return {
-            id: gameSnap.id,
-            ...serializableData
-        } as Game;
-    } catch (error) {
-        console.error("Error fetching game data:", error);
-        return null;
     }
-}
-
-export default async function ResultsPage({ params }: { params: { gameId: string } }) {
-    const gameData = await getGameData(params.gameId);
 
     if (!gameData) {
+        // This can happen if the URL is malformed or the data is missing
+        return (
+            <div className="container mx-auto py-8 px-4 text-center">
+                <h1 className="text-2xl font-bold">Could not load game results.</h1>
+                <p>The game data might be missing or corrupted.</p>
+            </div>
+        );
+    }
+
+    return <ResultsDisplay game={gameData} />;
+}
+
+
+export default function ResultsPage({ params }: { params: { gameId: string } }) {
+
+    if (params.gameId !== 'local') {
+        // Currently we only support local games, so we can show a not found page for other gameIds
+        // In the future, this could fetch from firestore
         notFound();
     }
 
     return (
         <Suspense fallback={<ResultsLoadingSkeleton />}>
-            <ResultsDisplay game={gameData} />
+            <LocalResultsPage />
         </Suspense>
     );
 }

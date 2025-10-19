@@ -3,18 +3,16 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/hooks/use-toast';
-import type { Player, TriviaQuestion, GameHistoryEntry } from '@/lib/types';
+import type { Player, TriviaQuestion, GameHistoryEntry, Game } from '@/lib/types';
 import Leaderboard from './Leaderboard';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
-import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import { Alert, AlertTitle } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, CheckCircle, XCircle, Clock, ArrowRight } from 'lucide-react';
-import { db } from '@/lib/firebase';
-import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { staticTriviaQuestions } from '@/lib/trivia-questions';
 
 const QUESTIONS_PER_GAME = 10;
@@ -56,7 +54,6 @@ export default function GameContainer() {
   const [playerAnswer, setPlayerAnswer] = useState("");
 
   const [gameHistory, setGameHistory] = useState<GameHistoryEntry[]>([]);
-  const [gameId, setGameId] = useState<string | null>(null);
 
   useEffect(() => {
     const playersParam = searchParams.get('players');
@@ -74,34 +71,16 @@ export default function GameContainer() {
   }, [searchParams, router, toast]);
 
   useEffect(() => {
-    async function initializeGame() {
-      if (players.length > 0 && !gameId) {
+    function initializeGame() {
+      if (players.length > 0) {
         setGamePhase('loading');
-        try {
-          const selectedQuestions = shuffle([...staticTriviaQuestions]).slice(0, QUESTIONS_PER_GAME);
-          
-          const gameDocData = {
-              players: players,
-              questions: selectedQuestions,
-              history: [],
-              status: 'in-progress' as const,
-              createdAt: serverTimestamp(),
-          };
-
-          const gameRef = await addDoc(collection(db, "games"), gameDocData);
-          
-          setGameId(gameRef.id);
-          setQuestions(selectedQuestions);
-          setGamePhase('playing');
-        } catch (error) {
-          console.error(error);
-          toast({ title: 'Game Error', description: 'Failed to initialize the game. Please try again.', variant: 'destructive' });
-          router.push('/');
-        }
+        const selectedQuestions = shuffle([...staticTriviaQuestions]).slice(0, QUESTIONS_PER_GAME);
+        setQuestions(selectedQuestions);
+        setGamePhase('playing');
       }
     }
     initializeGame();
-  }, [players, router, toast, gameId]);
+  }, [players]);
 
   useEffect(() => {
     if (gamePhase !== 'playing') return;
@@ -146,7 +125,9 @@ export default function GameContainer() {
           isCorrect: (currentAnswers[p.id] || "").toLowerCase() === correctAnswer.toLowerCase(),
         }))
       };
-      setGameHistory(prev => [...prev, newGameHistoryEntry]);
+      const updatedHistory = [...gameHistory, newGameHistoryEntry];
+      setGameHistory(updatedHistory);
+
 
       const updatedPlayers = players.map(player => {
         if ((currentAnswers[player.id] || "").toLowerCase() === correctAnswer.toLowerCase()) {
@@ -163,28 +144,21 @@ export default function GameContainer() {
         setGamePhase('playing');
       } else {
         setGamePhase('finished');
-        const finalHistory = [...gameHistory, newGameHistoryEntry];
         
-        if (gameId) {
-            try {
-                const gameRef = doc(db, "games", gameId);
-                await updateDoc(gameRef, {
-                    players: updatedPlayers,
-                    history: finalHistory,
-                    status: 'finished'
-                });
-                router.push(`/results/${gameId}`);
-            } catch (error) {
-                console.error("Failed to save game results:", error);
-                toast({ title: 'Error', description: 'Could not save game results. Please try again.', variant: 'destructive' });
-            }
-        } else {
-             toast({ title: 'Error', description: 'Game ID not found. Cannot save results.', variant: 'destructive' });
-             router.push('/');
-        }
+        const finalGameData: Game = {
+          id: crypto.randomUUID(),
+          players: updatedPlayers,
+          history: updatedHistory,
+          questions: questions,
+          status: 'finished',
+          createdAt: new Date().toISOString(),
+        };
+
+        const gameDataString = encodeURIComponent(JSON.stringify(finalGameData));
+        router.push(`/results/local?game=${gameDataString}`);
       }
     }
-  }, [gamePhase, currentQuestion, players, currentAnswers, currentQuestionIndex, questions.length, router, gameHistory, gameId, toast]);
+  }, [gamePhase, currentQuestion, players, currentAnswers, currentQuestionIndex, questions.length, router, gameHistory, questions]);
 
   const unansweredPlayers = useMemo(() => {
     return players.filter(p => !currentAnswers[p.id]);

@@ -29,5 +29,5 @@ export interface Game {
   questions: TriviaQuestion[];
   history: GameHistoryEntry[];
   status: 'in-progress' | 'finished';
-  createdAt: { seconds: number; nanoseconds: number }; // Serialized Firestore Timestamp
+  createdAt: string; // Using ISO string for local state
 }
