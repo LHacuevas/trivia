@@ -2,7 +2,8 @@ import type {NextConfig} from 'next';
 
 const nextConfig: NextConfig = {
   /* config options here */
-  basePath: '/trivia', // importante!
+  output: 'export',
+  basePath: '/trivia',
   typescript: {
     ignoreBuildErrors: true,
   },
