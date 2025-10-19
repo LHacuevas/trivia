@@ -7,8 +7,7 @@
     "genkit:dev": "genkit start -- tsx src/ai/dev.ts",
     "genkit:watch": "genkit start -- tsx --watch src/ai/dev.ts",
     "build": "next build",
-    "export": "next export",
-    "deploy": "next build && next export && gh-pages -d out",
+    "deploy": "next build && touch out/.nojekyll && gh-pages -d out",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
@@ -46,6 +45,7 @@
     "firebase": "^11.9.1",
     "framer-motion": "^11.2.12",
     "genkit": "^1.20.0",
+    "gh-pages": "^6.1.1",
     "lodash": "^4.17.21",
     "lucide-react": "^0.475.0",
     "next": "15.3.3",
@@ -65,7 +65,6 @@
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "genkit-cli": "^1.20.0",
-    "gh-pages": "^6.1.1",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"
