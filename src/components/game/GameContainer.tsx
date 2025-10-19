@@ -9,10 +9,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Alert, AlertTitle } from '@/components/ui/alert';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, CheckCircle, XCircle, Clock, ArrowRight } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, Clock, ArrowRight, HelpCircle } from 'lucide-react';
 import { staticTriviaQuestions } from '@/lib/trivia-questions';
 
 const QUESTIONS_PER_GAME = 10;
@@ -47,13 +45,8 @@ export default function GameContainer() {
   const [gamePhase, setGamePhase] = useState<'loading' | 'playing' | 'reveal' | 'finished'>('loading');
   
   const [timer, setTimer] = useState(TIME_PER_QUESTION);
-  const [currentAnswers, setCurrentAnswers] = useState<Record<string, string>>({});
-
-  const [isAnswerModalOpen, setIsAnswerModalOpen] = useState(false);
-  const [activePlayer, setActivePlayer] = useState<Player | null>(null);
-  const [playerAnswer, setPlayerAnswer] = useState("");
-
   const [gameHistory, setGameHistory] = useState<GameHistoryEntry[]>([]);
+  const [activePlayerIndex, setActivePlayerIndex] = useState(0);
 
   useEffect(() => {
     const playersParam = searchParams.get('players');
@@ -74,8 +67,9 @@ export default function GameContainer() {
     function initializeGame() {
       if (players.length > 0) {
         setGamePhase('loading');
-        const selectedQuestions = shuffle([...staticTriviaQuestions]).slice(0, QUESTIONS_PER_GAME);
+        const selectedQuestions = shuffle([...staticTriviaQuestions]); // Shuffle all questions
         setQuestions(selectedQuestions);
+        setCurrentQuestionIndex(0);
         setGamePhase('playing');
       }
     }
@@ -95,82 +89,92 @@ export default function GameContainer() {
     }
   }, [timer, gamePhase]);
 
+  const activePlayer = useMemo(() => players[activePlayerIndex], [players, activePlayerIndex]);
   const currentQuestion = useMemo(() => questions[currentQuestionIndex], [questions, currentQuestionIndex]);
 
-  const handleOpenAnswerModal = (player: Player) => {
-    if (currentAnswers[player.id]) return; // Already answered
-    setActivePlayer(player);
-    setIsAnswerModalOpen(true);
-  };
-  
-  const handleSubmitAnswer = () => {
-    if (!activePlayer || !playerAnswer.trim()) return;
-    setCurrentAnswers(prev => ({...prev, [activePlayer.id]: playerAnswer.trim()}));
-    setIsAnswerModalOpen(false);
-    setPlayerAnswer("");
-    setActivePlayer(null);
-  };
-
-  const handleNextPhase = useCallback(async () => {
-    if (gamePhase === 'reveal') {
-      const correctAnswer = currentQuestion.answer;
-      
-      const newGameHistoryEntry: GameHistoryEntry = {
-        question: currentQuestion.question,
-        category: currentQuestion.category,
-        correctAnswer: correctAnswer,
-        players: players.map(p => ({
-          name: p.name,
-          answer: currentAnswers[p.id] || "No answer",
-          isCorrect: (currentAnswers[p.id] || "").toLowerCase() === correctAnswer.toLowerCase(),
-        }))
-      };
-      const updatedHistory = [...gameHistory, newGameHistoryEntry];
-      setGameHistory(updatedHistory);
-
-
-      const updatedPlayers = players.map(player => {
-        if ((currentAnswers[player.id] || "").toLowerCase() === correctAnswer.toLowerCase()) {
-          return { ...player, score: player.score + 10 };
-        }
-        return player;
-      });
-      setPlayers(updatedPlayers);
-
-      if (currentQuestionIndex < questions.length - 1) {
-        setCurrentQuestionIndex(prev => prev + 1);
-        setCurrentAnswers({});
-        setTimer(TIME_PER_QUESTION);
-        setGamePhase('playing');
-      } else {
-        setGamePhase('finished');
-        
-        const finalGameData: Game = {
-          id: crypto.randomUUID(),
-          players: updatedPlayers,
-          history: updatedHistory,
-          questions: questions,
-          status: 'finished',
-          createdAt: new Date().toISOString(),
-        };
-
-        const gameDataString = encodeURIComponent(JSON.stringify(finalGameData));
-        router.push(`/results/local?game=${gameDataString}`);
-      }
+  const goToNextQuestion = useCallback(() => {
+    if (currentQuestionIndex < questions.length - 1) {
+      setCurrentQuestionIndex(prev => prev + 1);
+      setTimer(TIME_PER_QUESTION);
+      setGamePhase('playing');
+    } else {
+      setGamePhase('finished');
+      finishGame(players, gameHistory);
     }
-  }, [gamePhase, currentQuestion, players, currentAnswers, currentQuestionIndex, questions.length, router, gameHistory, questions]);
+  }, [currentQuestionIndex, questions.length, players, gameHistory]);
 
-  const unansweredPlayers = useMemo(() => {
-    return players.filter(p => !currentAnswers[p.id]);
-  }, [players, currentAnswers]);
+  const finishGame = (finalPlayers: Player[], finalHistory: GameHistoryEntry[]) => {
+     const finalGameData: Game = {
+        id: crypto.randomUUID(),
+        players: finalPlayers,
+        history: finalHistory,
+        questions: questions.slice(0, finalHistory.length),
+        status: 'finished',
+        createdAt: new Date().toISOString(),
+      };
 
-  if (gamePhase === 'loading' || !currentQuestion) {
+      const gameDataString = encodeURIComponent(JSON.stringify(finalGameData));
+      router.push(`/results/local?game=${gameDataString}`);
+  }
+
+  const handleAnswer = (result: 'correct' | 'incorrect' | 'error') => {
+    if (gamePhase !== 'reveal') return;
+
+    const newGameHistoryEntry: GameHistoryEntry = {
+      question: currentQuestion.question,
+      category: currentQuestion.category,
+      correctAnswer: currentQuestion.answer,
+      players: [{
+        name: activePlayer.name,
+        answer: result,
+        isCorrect: result === 'correct',
+      }]
+    };
+    const updatedHistory = [...gameHistory, newGameHistoryEntry];
+    setGameHistory(updatedHistory);
+
+    let updatedPlayers = [...players];
+    let nextPlayerIndex = activePlayerIndex;
+
+    if (result === 'correct') {
+      updatedPlayers = players.map((player, index) => 
+        index === activePlayerIndex ? { ...player, score: player.score + 10 } : player
+      );
+      setPlayers(updatedPlayers);
+      goToNextQuestion();
+    } else if (result === 'incorrect') {
+      nextPlayerIndex = (activePlayerIndex + 1) % players.length;
+      setActivePlayerIndex(nextPlayerIndex);
+      goToNextQuestion();
+    } else if (result === 'error') {
+      // Same player, next question
+      goToNextQuestion();
+    }
+
+    if (currentQuestionIndex + 1 >= questions.length) {
+        setGamePhase('finished');
+        finishGame(updatedPlayers, updatedHistory);
+    }
+  };
+
+
+  if (gamePhase === 'loading' || !currentQuestion || !activePlayer) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh]">
         <Loader2 className="h-16 w-16 animate-spin text-primary" />
-        <p className="mt-4 text-xl text-muted-foreground">Preparing the game...</p>
+        <p className="mt-4 text-xl text-muted-foreground">Preparando el juego...</p>
       </div>
     );
+  }
+  
+  if (gamePhase === 'finished') {
+    return (
+       <div className="flex flex-col items-center justify-center min-h-[60vh]">
+        <h1 className="text-4xl font-bold">¡Juego Terminado!</h1>
+        <p className="mt-4 text-xl text-muted-foreground">Calculando resultados finales...</p>
+        <Loader2 className="h-8 w-8 animate-spin mt-4" />
+      </div>
+    )
   }
 
   return (
@@ -181,7 +185,7 @@ export default function GameContainer() {
             <CardHeader>
               <div className="flex justify-between items-start">
                   <div>
-                    <CardDescription>Question {currentQuestionIndex + 1} / {questions.length}</CardDescription>
+                    <CardDescription>Pregunta {currentQuestionIndex + 1}</CardDescription>
                     <CardTitle className="text-2xl lg:text-3xl font-bold mt-1">{currentQuestion.question}</CardTitle>
                   </div>
                   <Badge variant="secondary" className="whitespace-nowrap">{currentQuestion.category}</Badge>
@@ -198,61 +202,37 @@ export default function GameContainer() {
                   
                   <Card>
                     <CardHeader>
-                      <CardTitle>Who will answer?</CardTitle>
-                      <CardDescription>Click your name to submit an answer.</CardDescription>
+                      <CardTitle>Turno de: {activePlayer.name}</CardTitle>
+                      <CardDescription>¿Estás listo?</CardDescription>
                     </CardHeader>
-                    <CardContent className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {players.map(player => {
-                        const hasAnswered = !!currentAnswers[player.id];
-                        return (
-                          <Button 
-                            key={player.id} 
-                            variant={hasAnswered ? "secondary" : "outline"}
-                            onClick={() => handleOpenAnswerModal(player)}
-                            disabled={hasAnswered}
-                            className="justify-start gap-2"
-                          >
-                            {hasAnswered ? <CheckCircle className="h-4 w-4 text-green-500" /> : <div className="h-4 w-4" />}
-                            <span className="truncate">{player.name}</span>
-                          </Button>
-                        )
-                      })}
-                    </CardContent>
                   </Card>
-                  {unansweredPlayers.length === 0 && (
-                     <Button onClick={() => setGamePhase('reveal')} className="w-full">
-                        Reveal Answer <ArrowRight className="ml-2 h-4 w-4" />
-                     </Button>
-                  )}
+
+                  <Button onClick={() => setGamePhase('reveal')} className="w-full">
+                      Revelar Respuesta <ArrowRight className="ml-2 h-4 w-4" />
+                  </Button>
                 </div>
               )}
 
               {gamePhase === 'reveal' && (
                 <div className="space-y-4 animate-in fade-in-50">
                    <Alert className="bg-green-500/10 border-green-500/50 text-green-700 dark:text-green-400">
-                    <AlertTitle className="font-bold">The correct answer is: {currentQuestion.answer}</AlertTitle>
+                    <AlertTitle className="font-bold">La respuesta correcta es: {currentQuestion.answer}</AlertTitle>
                   </Alert>
-
-                  <div className="space-y-2">
-                    {players.map(player => {
-                      const playerAnswer = currentAnswers[player.id] || "No answer";
-                      const isCorrect = playerAnswer.toLowerCase() === currentQuestion.answer.toLowerCase();
-                      return (
-                        <div key={player.id} className="flex items-center justify-between p-3 rounded-md bg-secondary">
-                          <p className="font-medium">{player.name}</p>
-                          <div className="flex items-center gap-2">
-                            <p className="text-muted-foreground italic truncate max-w-[150px]">{playerAnswer}</p>
-                            {isCorrect ? <CheckCircle className="h-5 w-5 text-green-500" /> : <XCircle className="h-5 w-5 text-destructive" />}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
                   
-                  <Button onClick={handleNextPhase} className="w-full">
-                    {currentQuestionIndex < questions.length - 1 ? 'Next Question' : 'Finish Game'}
-                    <ArrowRight className="ml-2 h-4 w-4" />
-                  </Button>
+                  <div className='text-center'>
+                    <p className='text-muted-foreground mb-2'>¿Cómo le fue a {activePlayer.name}?</p>
+                    <div className="flex justify-center gap-4">
+                        <Button onClick={() => handleAnswer('correct')} variant="default" className="bg-green-600 hover:bg-green-700">
+                            <CheckCircle className="mr-2"/> Correcta
+                        </Button>
+                        <Button onClick={() => handleAnswer('incorrect')} variant="destructive">
+                            <XCircle className="mr-2"/> Incorrecta
+                        </Button>
+                        <Button onClick={() => handleAnswer('error')} variant="secondary">
+                            <HelpCircle className="mr-2"/> Erronea
+                        </Button>
+                    </div>
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -260,28 +240,9 @@ export default function GameContainer() {
         </div>
         
         <div className="order-1 lg:order-2">
-          <Leaderboard players={players} />
+          <Leaderboard players={players} activePlayerId={activePlayer.id} />
         </div>
       </div>
-
-      <Dialog open={isAnswerModalOpen} onOpenChange={setIsAnswerModalOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>It's your turn, {activePlayer?.name}!</DialogTitle>
-            <DialogDescription>Enter your answer for the question below. No cheating!</DialogDescription>
-          </DialogHeader>
-          <p className="font-semibold italic text-muted-foreground">"{currentQuestion.question}"</p>
-          <Input 
-            placeholder="Type your answer here..."
-            value={playerAnswer}
-            onChange={(e) => setPlayerAnswer(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSubmitAnswer()}
-          />
-          <DialogFooter>
-            <Button onClick={handleSubmitAnswer} disabled={!playerAnswer.trim()}>Submit Answer</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
